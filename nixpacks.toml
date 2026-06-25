@@ -4,7 +4,8 @@ nixPkgs = ["nodejs_22", "python312", "python312Packages.pip"]
 [phases.install]
 cmds = [
   "npm ci",
-  "pip install -r requirements.txt"
+  "python3 -m venv /app/.venv",
+  "/app/.venv/bin/pip install -r requirements.txt"
 ]
 
 [phases.build]
@@ -12,3 +13,6 @@ cmds = ["npm run build"]
 
 [start]
 cmd = "npm start"
+
+[variables]
+PATH = "/app/.venv/bin:${PATH}"
