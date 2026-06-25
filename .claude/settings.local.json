@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:5000)",
+      "Bash(PORT=3001 NODE_ENV=development tsx /Users/hichamlamrani/Downloads/hot100/server/index.ts)",
+      "Bash(curl -s http://localhost:3001)",
+      "Bash(cat /tmp/hot100.log)",
+      "Bash(PORT=3001 NODE_ENV=development npx tsx server/index.ts > /tmp/hot100.log 2>&1 & *)",
+      "Bash(kill 3514)",
+      "mcp__Claude_Preview__preview_start"
+    ]
+  }
+}
