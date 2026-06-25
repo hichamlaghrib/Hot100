@@ -3,9 +3,9 @@ import type { Server } from "http";
 import { storage } from "./storage";
 import { fetchTubularCreators, fetchTubularTrends, fetchTubularDailyHistory } from "./tubular";
 import { getModashReport } from "./modash";
-import { scoreCreators, preFilter, applyPredictionSignal } from "./scoring";
-import { forecastCreator, HORIZON_WEEKS, MODELS, globalForecast } from "./forecast";
-import type { CreatorForecast, GlobalForecastResult } from "./forecast";
+import { scoreCreators, preFilter } from "./scoring";
+import { forecastCreator } from "./forecast";
+import type { CreatorForecast } from "./forecast";
 import type { EnrichedInput } from "./scoring";
 import type { Platform } from "./tubular";
 import { z } from "zod";
@@ -203,44 +203,19 @@ async function runPipeline(reportId: number, platform: Platform = "youtube", sig
     setProgress(60, "scoring", `Phase 3: Scoring ${enriched.length} creators...`);
     const scored = scoreCreators(enriched);
 
-    // ── Phase 3.5: ML time-series forecasting (60–92) ────────────────────
-    // Fetch 365-day daily history for the top-100, fit several models per
-    // creator with backtesting, forecast 12 weeks, then re-score with the
-    // predicted-growth signal added.
+    // ── Phase 3.5: ML time-series forecasting ────────────────────────────
     setProgress(62, "ml", `Phase 3.5: Fetching 1-year history for ${scored.length} creators...`);
 
     const forecastById = new Map<string, CreatorForecast>();
-    const modelWins: Record<string, number> = {};
-    const modelErrSum: Record<string, number> = {};
-    const modelErrCnt: Record<string, number> = {};
-    const modelOverfitSum: Record<string, number> = {};
-    const modelOverfitCnt: Record<string, number> = {};
-    const modelRobust: Record<string, number> = {};
-    for (const name of Object.keys(MODELS)) {
-      modelWins[name] = 0; modelErrSum[name] = 0; modelErrCnt[name] = 0;
-      modelOverfitSum[name] = 0; modelOverfitCnt[name] = 0; modelRobust[name] = 0;
-    }
 
     try {
       const ids = scored.map(s => s.tubularId);
       const dailyMap = await fetchTubularDailyHistory(tubularKey, ids, platform, (done, total) => {
-        setProgress(62 + (done / total) * 14, "ml",
+        setProgress(62 + (done / total) * 28, "ml",
           `Phase 3.5: Fetching 1-year history... (${done}/${total})`);
       });
 
-      setProgress(76, "ml", `Phase 3.5: Training univariate models on ${scored.length} creators...`);
-      
-      const modelWins: Record<string, number> = {};
-      const modelErrSum: Record<string, number> = {};
-      const modelErrCnt: Record<string, number> = {};
-      const modelOverfitSum: Record<string, number> = {};
-      const modelOverfitCnt: Record<string, number> = {};
-      const modelRobust: Record<string, number> = {};
-      const leaderboardNames = [...Object.keys(MODELS), "lightgbm_global"];
-      for (const name of leaderboardNames) {
-        modelWins[name] = 0; modelErrSum[name] = 0; modelErrCnt[name] = 0;
-        modelOverfitSum[name] = 0; modelOverfitCnt[name] = 0; modelRobust[name] = 0;
-      }
+      setProgress(90, "ml", `Phase 3.5: Training univariate models on ${scored.length} creators...`);
 
       for (const s of scored) {
         const daily = dailyMap.get(s.tubularId) ?? [];
@@ -250,100 +225,6 @@ async function runPipeline(reportId: number, platform: Platform = "youtube", sig
         );
         forecastById.set(s.tubularId, fc);
       }
-
-      checkCancelled();
-      setProgress(85, "ml", `Phase 3.5: Training global LightGBM model on ${scored.length} creators...`);
-
-      const payloadData = scored.map(s => ({
-        creatorId: s.tubularId,
-        genre: s.genre,
-        history: dailyMap.get(s.tubularId) ?? []
-      }));
-
-      const globalRes = await globalForecast(payloadData, HORIZON_WEEKS * 7);
-
-      const predGrowthById = new Map<string, number>();
-      for (const s of scored) {
-        const fcBase = forecastById.get(s.tubularId);
-        const lgb = globalRes[s.tubularId];
-        if (!fcBase || !lgb) continue;
-
-        const vMet = lgb.metrics?.views || { cvMape: 999, testMape: 999 };
-        const fMet = lgb.metrics?.followers || { cvMape: 999, testMape: 999 };
-        
-        fcBase.views.scores.push({
-          model: "lightgbm_global", transform: "identity", mode: "raw",
-          mape: vMet.testMape, smape: vMet.testMape, rmse: 0, mae: 0, r2: 0, mase: 0, skillVsNaive: 0,
-          trainMape: vMet.cvMape, testMape: vMet.testMape,
-          overfitRatio: vMet.testMape / (vMet.cvMape || 1e-8), overfitGap: 0,
-          cvMape: vMet.cvMape, cvStd: 0, cvFolds: 1,
-          verdict: vMet.testMape < 50 ? "robust" : "moderate"
-        });
-        
-        fcBase.followers.scores.push({
-          model: "lightgbm_global", transform: "identity", mode: "raw",
-          mape: fMet.testMape, smape: fMet.testMape, rmse: 0, mae: 0, r2: 0, mase: 0, skillVsNaive: 0,
-          trainMape: fMet.cvMape, testMape: fMet.testMape,
-          overfitRatio: fMet.testMape / (fMet.cvMape || 1e-8), overfitGap: 0,
-          cvMape: fMet.cvMape, cvStd: 0, cvFolds: 1,
-          verdict: fMet.testMape < 50 ? "robust" : "moderate"
-        });
-        
-        fcBase.views.scores.sort((a, b) => a.cvMape - b.cvMape);
-        fcBase.followers.scores.sort((a, b) => a.cvMape - b.cvMape);
-        
-        fcBase.views.bestModel = fcBase.views.scores[0].model;
-        fcBase.followers.bestModel = fcBase.followers.scores[0].model;
-        
-        modelWins[fcBase.views.bestModel]++;
-        modelWins[fcBase.followers.bestModel]++;
-        
-        for (const sc of [...fcBase.views.scores, ...fcBase.followers.scores]) {
-          if (sc.cvMape < 900) {
-            modelErrSum[sc.model] += sc.cvMape;
-            modelErrCnt[sc.model]++;
-          }
-          if (sc.overfitRatio < 900) {
-            modelOverfitSum[sc.model] += sc.overfitRatio;
-            modelOverfitCnt[sc.model]++;
-          }
-          if (sc.verdict === "robust") modelRobust[sc.model]++;
-        }
-
-        const daily = dailyMap.get(s.tubularId) ?? [];
-        const recentN = Math.min(HORIZON_WEEKS * 7, daily.length);
-        const recentViews = daily.slice(-recentN).reduce((sum, p) => sum + p.views, 0) || 1;
-        const futViews = lgb.views.p50.reduce((sum, v) => sum + v, 0);
-        const pViewsGrowth = futViews / recentViews - 1;
-
-        const futFollowerNet = lgb.followers.p50.reduce((sum, f) => sum + f, 0);
-        const pFollowersGrowth = s.followers > 0 ? futFollowerNet / s.followers : 0;
-
-        const blend = (0.6 * pViewsGrowth + 0.4 * pFollowersGrowth);
-        predGrowthById.set(s.tubularId, blend);
-        
-        forecastById.set(s.tubularId, {
-          history: daily,
-          forecast: lgb,
-          views: fcBase.views,
-          followers: fcBase.followers,
-          predViewsGrowth: pViewsGrowth,
-          predFollowersGrowth: pFollowersGrowth
-        } as any);
-      }
-
-      checkCancelled();
-      setProgress(92, "scoring", `Phase 4: Recalculating Hot Score with ML prediction...`);
-      applyPredictionSignal(scored, predGrowthById);
-
-      const leaderboard = leaderboardNames.map(name => ({
-        model: name,
-        wins: modelWins[name] ?? 0,
-        avgMape: modelErrCnt[name] ? +(modelErrSum[name] / modelErrCnt[name]).toFixed(1) : null,
-        avgOverfit: modelOverfitCnt[name] ? +(modelOverfitSum[name] / modelOverfitCnt[name]).toFixed(2) : null,
-        robustCount: modelRobust[name] ?? 0,
-      })).sort((a, b) => (b.wins - a.wins));
-      storage.updateReport(reportId, { modelLeaderboard: JSON.stringify(leaderboard) });
     } catch (mlErr) {
       console.warn("ML forecasting phase failed — keeping base scores:", mlErr);
     }
