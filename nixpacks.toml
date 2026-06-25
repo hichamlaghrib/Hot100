@@ -1,11 +1,10 @@
 [phases.setup]
-nixPkgs = ["nodejs_22", "python312", "python312Packages.pip"]
+nixPkgs = ["nodejs_22", "python312", "gnumake", "gcc"]
 
 [phases.install]
 cmds = [
   "npm ci",
-  "python3 -m venv /app/.venv",
-  "/app/.venv/bin/pip install -r requirements.txt"
+  "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
 ]
 
 [phases.build]
@@ -15,4 +14,4 @@ cmds = ["npm run build"]
 cmd = "npm start"
 
 [variables]
-PATH = "/app/.venv/bin:${PATH}"
+NPM_CONFIG_PRODUCTION = "false"
